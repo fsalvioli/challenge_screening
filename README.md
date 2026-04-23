@@ -263,6 +263,67 @@ Métrica de control de alto nivel que asegura que ninguna cuenta activa sea omit
 - **Coverage %:** KPI crítico para auditorías externas; un valor inferior al 100% indica clientes operando sin haber sido validados contra listas de riesgo.
 
 -----
+### Ejemplos de Queries:
+1. Consultas Operativas (Día a día)
+- Buscar coincidencias de una persona específica
+```
+SELECT 
+    p.first_name, 
+    p.last_name, 
+    le.full_name AS list_match_name, 
+    a.similarity_score, 
+    a.status
+FROM screening.persons p
+JOIN screening.alerts a ON p.id = a.entity_id
+JOIN screening.list_entries le ON a.list_entry_id = le.id
+WHERE p.tax_id = '12345678' -- DNI o Tax ID del cliente
+  AND p.tenant_id = (SELECT id FROM screening.tenants WHERE name = 'Banco de Ramos Mejía');
+```
+- Listar alertas pendientes de revisión
+```
+SELECT 
+    id AS alert_id, 
+    entity_type, 
+    similarity_score, 
+    created_at
+FROM screening.alerts
+WHERE status = 'PENDING'
+ORDER BY similarity_score DESC, created_at ASC;
+```
+
+2. Consultas de Auditoría (Compliance)
+- Ver el historial de cambios de una alerta
+```
+SELECT 
+    l.old_status, 
+    l.new_status, 
+    u.full_name AS analyst_name, 
+    l.changed_at
+FROM screening.alert_status_log l
+JOIN screening.users u ON l.changed_by = u.id
+WHERE l.alert_id = 'ID_DE_LA_ALERTA_AQUI'
+ORDER BY l.changed_at DESC;
+```
+- Validación de RLS (Seguridad)
+```
+-- Simulamos la sesión del usuario
+SET app.current_tenant_id = 'ID_DEL_TENANT_AQUI';
+
+-- Si el RLS está bien configurado, esto solo devolverá filas de ese Tenant
+SELECT COUNT(*) FROM screening.persons;
+```
+
+- Distribución de Scores (Histograma)
+```
+SELECT 
+    WIDTH_BUCKET(similarity_score, 0, 100, 10) * 10 AS score_range,
+    COUNT(*) AS count
+FROM screening.alerts
+GROUP BY score_range
+ORDER BY score_range;
+```
+
+-----
 
 ## 🚀 Benchmarks de Performance & Escalabilidad
 *Nota: Las pruebas fueron realizadas localmente sobre el contenedor de Docker configurado en este repositorio.*
