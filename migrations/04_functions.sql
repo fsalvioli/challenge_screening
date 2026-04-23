@@ -27,6 +27,20 @@ AS $$
 DECLARE
     v_norm_input TEXT;
     v_is_bad_pattern BOOLEAN;
+
+/*
+Autor: Franco Salvioli
+Fecha: 2026-04-19
+Desc: Realiza una búsqueda inteligente de identificadores fiscales (CUIT, RUT, SSN, etc.). 
+      Normaliza el input (eliminando puntos, guiones y espacios) y permite búsquedas 
+      globales si no se especifica un país. Detecta patrones sospechosos (documentos muy 
+      cortos o repetitivos) y devuelve coincidencias clasificadas como EXACT, 
+      NORMALIZED o FUZZY con un score de confianza.
+
+Ejemplo de ejecucion:
+SELECT * FROM screening.search_by_tax_id('20-30444555-6', 'AR');
+*/
+
 BEGIN
 
     v_norm_input := UPPER(REGEXP_REPLACE(p_tax_id, '[^a-zA-Z0-9]', '', 'g'));
@@ -91,6 +105,22 @@ DECLARE
     v_date_score NUMERIC := 0;
     v_final_score NUMERIC;
     v_details JSONB;
+
+/*
+Autor: Franco Salvioli
+Fecha: 2026-04-20
+Desc: Evalúa el nivel de riesgo comparando múltiples dimensiones de una entidad contra 
+      una entrada de la lista. Aplica una ponderación inteligente (60% nombre, 30% documento, 
+      10% fecha de nacimiento) y soporta coincidencias parciales de fechas. 
+      Devuelve un objeto JSONB con el desglose de los puntajes para auditoría humana.
+
+Ejemplo de ejecucion:
+SELECT * FROM screening.calculate_similarity(
+    p_person_id => 'uuid-de-la-persona',
+    p_list_entry_id => 'uuid-de-la-lista'
+);
+*/
+
 BEGIN
     -- 1. Similitud de Nombres (Trigramas + Limpieza de acentos)
     v_name_score := similarity(unaccent(p_name_input), unaccent(p_name_db))::NUMERIC;
@@ -167,6 +197,23 @@ DECLARE
     v_entity_tax TEXT;
     v_entity_dob DATE;
     v_tenant_id UUID;
+
+/*
+Autor: Franco Salvioli
+Fecha: 2026-04-20
+Desc: Orquestador principal del sistema que procesa entidades (PERSON o COMPANY) contra 
+      las listas de control de manera dinámica. Utiliza CROSS JOIN LATERAL para cálculos 
+      en tiempo real y una estrategia de Upsert (ON CONFLICT DO UPDATE) para evitar la 
+      duplicidad de alertas, actualizando el score si el hallazgo ya existía.
+
+Ejemplo de ejecucion:
+SELECT screening.run_screening(
+    p_entity_id => 'uuid-entidad',
+    p_entity_type => 'PERSON',
+    p_threshold => 0.85
+);
+*/
+
 BEGIN
 
     IF p_entity_type = 'PERSON' THEN
