@@ -1,0 +1,15 @@
+{
+    "sqltools.connections": [
+        {
+            "ssh": "Disabled",
+            "previewLimit": 50,
+            "server": "localhost",
+            "port": 5432,
+            "driver": "PostgreSQL",
+            "name": "challenge",
+            "database": "complif_challenge",
+            "username": "admin",
+            "password": "secret_password"
+        }
+    ]
+}

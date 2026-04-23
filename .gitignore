@@ -1,0 +1,10 @@
+# Docker
+.docker/
+data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backups (para no subir los dumps pesados al repo)
+scripts/backups/*.sql
