@@ -16,13 +16,13 @@ CREATE OR REPLACE FUNCTION screening.search_by_tax_id(
     entry_id UUID,
     matched_tax_id TEXT,
     match_type TEXT,
-    confidence NUMERIC,
-    is_suspicious BOOLEAN
+    confidence NUMERIC
+    --,is_suspicious BOOLEAN
 ) 
 LANGUAGE plpgsql 
-SECURITY DEFINER 
-SET search_path = screening, public, pg_temp -- Por seguridad al usar SECURITY DEFINER
-STABLE
+SECURITY DEFINER --> definimos que la fn se ejcute con privilegios de admin, asi el user analista debe ejecutarla a traves del admin de forma controlada
+SET search_path = screening, public, pg_temp --> con esto eviatmos ataques de secuestro de ruta, por si alguien crea la misma fn fuera de los esquemas conocidos
+STABLE --> ayuda para que el planificador de SQL sea mas eficiente
 AS $$
 DECLARE
     v_norm_input TEXT;
@@ -42,11 +42,13 @@ SELECT * FROM screening.search_by_tax_id('20-30444555-6', 'AR');
 */
 
 BEGIN
-
+    -- quitamos todo lo que no sea alfanumerico (guiones, comas, puntos, etc) y lo pasamos a mayusc.
     v_norm_input := UPPER(REGEXP_REPLACE(p_tax_id, '[^a-zA-Z0-9]', '', 'g'));
+    -- v_norm_input := SELECT * FROM screening.normalize_tax_id (p_tax => p_tax_id) 
 
-    -- esto para detectar si es demasiado corto, nos ayuda a que si llega '123' no busque todo sino que como es demasiado corto lo detecta como sospechoso
-    v_is_bad_pattern := (v_norm_input ~ '^(.)\1+$') OR (LENGTH(v_norm_input) < 5);
+    -- la primera instruccion es por si el sistema completa con '0' adeltante o al final, asi nos quedamos con el numero original.
+    -- la segunda instruccion es para avitar buscar por numeros pequeños que hagan que se demore demasiado la busqueda o para falsos positivos
+    -- v_is_bad_pattern := (v_norm_input ~ '^(.)\1+$') OR (LENGTH(v_norm_input) < 5);
 
 
     RETURN QUERY
@@ -62,9 +64,11 @@ BEGIN
         CASE 
             WHEN e.tax_id = p_tax_id THEN 1.0
             WHEN UPPER(REGEXP_REPLACE(e.tax_id, '[^a-zA-Z0-9]', '', 'g')) = v_norm_input THEN 0.95
+            -- usamos Similarity para detectar la cantidad de trigramas (grupos de 3 caracteres) que coinciden entre ambos parametros.
+            -- sumado al indice GIST hacemos que se descarten todos los que tienen posibilidad de score bajo y se quede con los altos antes de usar la fn()
             ELSE similarity(e.tax_id, p_tax_id)::NUMERIC
-        END AS confidence,
-        v_is_bad_pattern
+        END AS confidence
+        --,v_is_bad_pattern
     FROM screening.list_entries e
     JOIN screening.lists l ON e.list_id = l.id
     WHERE 
@@ -95,9 +99,9 @@ CREATE OR REPLACE FUNCTION screening.calculate_similarity(
     details JSONB
 ) 
 LANGUAGE plpgsql 
-SECURITY DEFINER 
-SET search_path = screening, public, pg_temp -- Por seguridad al usar SECURITY DEFINER
-STABLE
+SECURITY DEFINER --> definimos que la fn se ejcute con privilegios de admin, asi el user analista debe ejecutarla a traves del admin de forma controlada
+SET search_path = screening, public, pg_temp --> con esto eviatmos ataques de secuestro de ruta, por si alguien crea la misma fn fuera de los esquemas conocidos
+STABLE --> ayuda para que el planificador de SQL sea mas eficiente
 AS $$
 DECLARE
     v_name_score NUMERIC;
@@ -123,10 +127,13 @@ SELECT * FROM screening.calculate_similarity(
 
 BEGIN
     -- 1. Similitud de Nombres (Trigramas + Limpieza de acentos)
+    -- usamos Similarity para detectar la cantidad de trigramas (grupos de 3 caracteres) que coinciden entre ambos parametros.
+    -- sumado al indice GIST hacemos que se descarten todos los que tienen posibilidad de score bajo y se quede con los altos antes de usar la fn()
     v_name_score := similarity(unaccent(p_name_input), unaccent(p_name_db))::NUMERIC;
 
     -- 2. Similitud de Documentos
     IF p_tax_input IS NOT NULL AND p_tax_db IS NOT NULL THEN
+        -- aca usamos la fn que creamos previamente para ayudarnos con la igualdad de tax_id:
         IF screening.normalize_tax_id(p_tax_input) = screening.normalize_tax_id(p_tax_db) THEN
             v_tax_score := 1.0;
         ELSE
@@ -163,6 +170,7 @@ BEGIN
     );
 
     -- 5. Retorno si supera el umbral (convertido a escala 0-1)
+    -- no hay un ELSE para que no se agreguen filas en un posible INSERT de alertas que no son necesarias
     IF v_final_score >= (p_threshold * 100) THEN
         RETURN QUERY SELECT 
             v_final_score,
@@ -190,7 +198,8 @@ CREATE OR REPLACE FUNCTION screening.run_screening(
     match_details JSONB
 ) 
 LANGUAGE plpgsql
-SECURITY DEFINER
+SECURITY DEFINER --> definimos que la fn se ejcute con privilegios de admin, asi el user analista debe ejecutarla a traves del admin de forma controlada
+SET search_path = screening, public, pg_temp --> con esto eviatmos ataques de secuestro de ruta, por si alguien crea la misma fn fuera de los esquemas conocidos
 AS $$
 DECLARE
     v_entity_name TEXT;
@@ -215,7 +224,7 @@ SELECT screening.run_screening(
 */
 
 BEGIN
-
+    -- definimos si se trata de una persona o empresa: (la empresa no tiene brith_date, aunque podria ser el created_at)
     IF p_entity_type = 'PERSON' THEN
         SELECT full_name, tax_id, birth_date, tenant_id 
             INTO v_entity_name, v_entity_tax, v_entity_dob, v_tenant_id
@@ -239,6 +248,9 @@ BEGIN
             sim.details as s_details
         FROM screening.list_entries e
         JOIN screening.lists l ON e.list_id = l.id
+        -- usamos un cross join lateral para que actue como tabla virtual y podamos usarla en el WHERE o en el SELECT
+        -- SQL Server (cross apply)
+        -- ejecuta la fn para cada fila del from. Ayuda al performance
         CROSS JOIN LATERAL screening.calculate_similarity(
             v_entity_name, e.full_name, 
             v_entity_tax, e.tax_id, 
@@ -269,7 +281,8 @@ BEGIN
         pm.s_details,
         NOW()
     FROM potential_matches pm
-    ---
+    -- si ya esiste un registro con esas claves hace un UPDATE con los valores exluidos
+    -- el returning nos da los resultados que finalmente mostramos en el return query de arriba
     ON CONFLICT (id, created_at) 
     DO UPDATE SET 
         similarity_score = EXCLUDED.similarity_score,
